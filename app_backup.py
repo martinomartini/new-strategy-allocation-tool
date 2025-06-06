@@ -261,67 +261,6 @@ def get_weekly_usage_stats():
         'total_oasis_bookings': total_oasis_bookings
     }
 
-def get_all_time_usage_stats():
-    """Get comprehensive usage statistics across all time periods."""
-    # Room usage statistics - all time
-    room_usage_query = """
-        SELECT 
-            wa.room_name,
-            COUNT(*) as total_bookings,
-            COUNT(DISTINCT wa.team_name) as unique_teams,
-            COUNT(DISTINCT DATE_TRUNC('week', wa.date)) as weeks_used,
-            MIN(wa.date) as first_booking,
-            MAX(wa.date) as last_booking
-        FROM weekly_allocations wa
-        WHERE wa.room_name != 'Oasis'
-        GROUP BY wa.room_name
-        ORDER BY total_bookings DESC
-    """
-    
-    room_stats = execute_query(room_usage_query, fetch_all=True)
-    
-    # Oasis usage statistics - all time
-    oasis_usage_query = """
-        SELECT 
-            COUNT(*) as total_bookings,
-            COUNT(DISTINCT oa.person_name) as unique_people,
-            COUNT(DISTINCT DATE_TRUNC('week', oa.date)) as weeks_used,
-            MIN(oa.date) as first_booking,
-            MAX(oa.date) as last_booking,
-            COUNT(DISTINCT CASE WHEN DATE_PART('dow', oa.date) = 1 THEN oa.date END) as monday_bookings,
-            COUNT(DISTINCT CASE WHEN DATE_PART('dow', oa.date) = 2 THEN oa.date END) as tuesday_bookings,
-            COUNT(DISTINCT CASE WHEN DATE_PART('dow', oa.date) = 3 THEN oa.date END) as wednesday_bookings,
-            COUNT(DISTINCT CASE WHEN DATE_PART('dow', oa.date) = 4 THEN oa.date END) as thursday_bookings,
-            COUNT(DISTINCT CASE WHEN DATE_PART('dow', oa.date) = 5 THEN oa.date END) as friday_bookings
-        FROM oasis_allocations oa
-    """
-    
-    oasis_stats = execute_query(oasis_usage_query, fetch_one=True)
-    
-    # Weekly trends
-    weekly_trends_query = """
-        SELECT 
-            DATE_TRUNC('week', combined.date) as week_start,
-            SUM(CASE WHEN combined.type = 'room' THEN 1 ELSE 0 END) as room_bookings,
-            SUM(CASE WHEN combined.type = 'oasis' THEN 1 ELSE 0 END) as oasis_bookings
-        FROM (
-            SELECT date, 'room' as type FROM weekly_allocations WHERE room_name != 'Oasis'
-            UNION ALL
-            SELECT date, 'oasis' as type FROM oasis_allocations
-        ) combined
-        GROUP BY DATE_TRUNC('week', combined.date)
-        ORDER BY week_start DESC
-        LIMIT 10
-    """
-    
-    weekly_trends = execute_query(weekly_trends_query, fetch_all=True)
-    
-    return {
-        'room_stats': room_stats,
-        'oasis_stats': oasis_stats,
-        'weekly_trends': weekly_trends
-    }
-
 def get_user_analytics():
     """Get individual user analytics across all weeks."""
     # Team/Contact person analytics for room bookings
@@ -395,182 +334,17 @@ def get_user_analytics():
             FROM oasis_preferences op
             LEFT JOIN oasis_allocations oa ON op.person_name = oa.person_name
             GROUP BY op.person_name
-        ) oasis_data ON team_data.contact_person = oasis_data.person_name        ORDER BY (COALESCE(team_data.total_room_days, 0) + COALESCE(oasis_data.total_oasis_days, 0)) DESC
+        ) oasis_data ON team_data.contact_person = oasis_data.person_name
+        ORDER BY (COALESCE(team_data.total_room_days, 0) + COALESCE(oasis_data.total_oasis_days, 0)) DESC
     """
     
     combined_analytics = execute_query(combined_analytics_query, fetch_all=True)
+    
     return {
         'team_analytics': team_analytics,
         'oasis_analytics': oasis_analytics,
         'combined_analytics': combined_analytics
     }
-
-def view_current_submissions():
-    """Display and allow editing of current week submissions."""
-    st.subheader("📋 Current Submissions")
-    
-    # Team submissions
-    team_query = """
-        SELECT team_name, contact_person, team_size, preferred_days, submission_time 
-        FROM weekly_preferences 
-        ORDER BY submission_time DESC
-    """
-    team_submissions = execute_query(team_query, fetch_all=True)
-    
-    if team_submissions:
-        st.write("**🏢 Team Room Preferences:**")
-        team_df = pd.DataFrame(team_submissions)
-        
-        # Make it editable
-        edited_teams = st.data_editor(
-            team_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="team_submissions_editor"
-        )
-        
-        if st.button("💾 Save Team Changes"):
-            # Clear existing and insert updated data
-            execute_query("DELETE FROM weekly_preferences")
-            for _, row in edited_teams.iterrows():
-                insert_query = """
-                    INSERT INTO weekly_preferences (team_name, contact_person, team_size, preferred_days, submission_time) 
-                    VALUES (%s, %s, %s, %s, %s)
-                """
-                execute_query(insert_query, (
-                    row['team_name'], row['contact_person'], 
-                    row['team_size'], row['preferred_days'], row['submission_time']
-                ))
-            st.success("Team preferences updated!")
-            st.rerun()
-    else:
-        st.info("No team submissions yet.")
-    
-    st.divider()
-    
-    # Oasis submissions
-    oasis_query = """
-        SELECT person_name, preferred_day_1, preferred_day_2, preferred_day_3, 
-               preferred_day_4, preferred_day_5, submission_time 
-        FROM oasis_preferences 
-        ORDER BY submission_time DESC
-    """
-    oasis_submissions = execute_query(oasis_query, fetch_all=True)
-    
-    if oasis_submissions:
-        st.write("**🌴 Oasis Desk Preferences:**")
-        oasis_df = pd.DataFrame(oasis_submissions)
-        
-        # Make it editable
-        edited_oasis = st.data_editor(
-            oasis_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="oasis_submissions_editor"
-        )
-        
-        if st.button("💾 Save Oasis Changes"):
-            # Clear existing and insert updated data
-            execute_query("DELETE FROM oasis_preferences")
-            for _, row in edited_oasis.iterrows():
-                insert_query = """
-                    INSERT INTO oasis_preferences 
-                    (person_name, preferred_day_1, preferred_day_2, preferred_day_3, preferred_day_4, preferred_day_5, submission_time) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """
-                execute_query(insert_query, (
-                    row['person_name'], row['preferred_day_1'], row['preferred_day_2'],
-                    row['preferred_day_3'], row['preferred_day_4'], row['preferred_day_5'], 
-                    row['submission_time']
-                ))
-            st.success("Oasis preferences updated!")
-            st.rerun()
-    else:
-        st.info("No Oasis submissions yet.")
-
-def view_current_allocations_admin():
-    """Display and allow editing of current allocations."""
-    st.subheader("🎯 Current Allocations")
-    
-    current_week = get_current_week()
-    
-    # Room allocations
-    room_alloc_query = """
-        SELECT team_name, room_name, date 
-        FROM weekly_allocations 
-        WHERE date >= %s AND date <= %s AND room_name != 'Oasis'
-        ORDER BY date, room_name
-    """
-    start_date = current_week
-    end_date = current_week + timedelta(days=3)
-    
-    room_allocations = execute_query(room_alloc_query, (start_date, end_date), fetch_all=True)
-    
-    if room_allocations:
-        st.write("**🏢 Room Allocations:**")
-        room_alloc_df = pd.DataFrame(room_allocations)
-        
-        # Make it editable
-        edited_rooms = st.data_editor(
-            room_alloc_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="room_allocations_editor"
-        )
-        
-        if st.button("💾 Save Room Allocation Changes"):
-            # Clear existing room allocations and insert updated data
-            execute_query("DELETE FROM weekly_allocations WHERE room_name != 'Oasis'")
-            for _, row in edited_rooms.iterrows():
-                insert_query = """
-                    INSERT INTO weekly_allocations (team_name, room_name, date) 
-                    VALUES (%s, %s, %s)
-                """
-                execute_query(insert_query, (row['team_name'], row['room_name'], row['date']))
-            st.success("Room allocations updated!")
-            st.rerun()
-    else:
-        st.info("No room allocations yet.")
-    
-    st.divider()
-    
-    # Oasis allocations
-    oasis_alloc_query = """
-        SELECT person_name, date 
-        FROM oasis_allocations 
-        WHERE date >= %s AND date <= %s
-        ORDER BY date, person_name
-    """
-    oasis_end_date = current_week + timedelta(days=4)  # Include Friday
-    
-    oasis_allocations = execute_query(oasis_alloc_query, (start_date, oasis_end_date), fetch_all=True)
-    
-    if oasis_allocations:
-        st.write("**🌴 Oasis Allocations:**")
-        oasis_alloc_df = pd.DataFrame(oasis_allocations)
-        
-        # Make it editable
-        edited_oasis_alloc = st.data_editor(
-            oasis_alloc_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="oasis_allocations_editor"
-        )
-        
-        if st.button("💾 Save Oasis Allocation Changes"):
-            # Clear existing Oasis allocations and insert updated data
-            execute_query("DELETE FROM oasis_allocations")
-            for _, row in edited_oasis_alloc.iterrows():
-                insert_query = """
-                    INSERT INTO oasis_allocations (person_name, date) 
-                    VALUES (%s, %s)
-                """
-                execute_query(insert_query, (row['person_name'], row['date']))
-            st.success("Oasis allocations updated!")
-            st.rerun()
-    else:
-        st.info("No Oasis allocations yet.")
-
 # -----------------------------------------------------
 # Database Connection Pool
 # -----------------------------------------------------
@@ -804,6 +578,7 @@ def submit_oasis_preference():
     
     with st.form("oasis_preference_form"):
         person_name = st.text_input("Your Name*", help="Enter your full name")
+        
         st.write("**Select your preferred days** (up to 5 days)")
         days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
         selected_days = []
@@ -838,8 +613,10 @@ def submit_oasis_preference():
             if existing:
                 st.error("You have already submitted a preference.")
                 return
-              # Pad days to 5 elements
+            
+            # Pad days to 5 elements
             padded_days = selected_days + [None] * (5 - len(selected_days))
+            
             # Insert preference
             insert_query = """
                 INSERT INTO oasis_preferences 
@@ -903,8 +680,7 @@ def admin_controls():
                 try:
                     allocation_result = run_allocation(DATABASE_URL, only="project", base_monday_date=current_week)
                     if allocation_result:
-                        st.success("✅ Project room allocation completed!")
-                        st.rerun()
+                        st.success("✅ Project room allocation completed!")                        st.rerun()
                     else:
                         st.error("❌ Project room allocation failed.")
                 except Exception as e:
@@ -1067,63 +843,14 @@ def admin_controls():
                     execute_query(query)
                 st.success("Current data cleared!")
                 st.rerun()
-          # Manual Override section
+        
+        # Manual Override section
         st.subheader("⚙️ Manual Override")
         new_date = st.date_input("Set Week Monday", value=current_week)
         if st.button("Set Week", help="Manually set the current week"):
             set_current_week(new_date)
             st.success(f"Week set to {new_date.strftime('%B %d, %Y')}")
             st.rerun()
-        
-        st.divider()
-        
-        # Submission and Allocation Management
-        st.subheader("📋 Data Management")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("📋 View & Edit Submissions", help="View and manually edit current submissions"):
-                view_current_submissions()
-        
-        with col2:
-            if st.button("🎯 View & Edit Allocations", help="View and manually edit current allocations"):
-                view_current_allocations_admin()
-        
-        # All-time Analytics
-        if st.button("📊 Show All-Time Analytics", help="Historical usage patterns across all weeks"):
-            all_time_stats = get_all_time_usage_stats()
-            
-            st.write("**🏢 All-Time Room Usage:**")
-            if all_time_stats['room_stats']:
-                room_df = pd.DataFrame(all_time_stats['room_stats'])
-                st.dataframe(room_df, use_container_width=True)
-            
-            st.write("**🌴 All-Time Oasis Usage:**")
-            if all_time_stats['oasis_stats']:
-                oasis_stats = all_time_stats['oasis_stats']
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Oasis Bookings", oasis_stats['total_bookings'])
-                with col2:
-                    st.metric("Unique People", oasis_stats['unique_people'])
-                with col3:
-                    st.metric("Weeks Used", oasis_stats['weeks_used'])
-                
-                # Day breakdown
-                day_breakdown = {
-                    'Monday': oasis_stats['monday_bookings'],
-                    'Tuesday': oasis_stats['tuesday_bookings'],
-                    'Wednesday': oasis_stats['wednesday_bookings'],
-                    'Thursday': oasis_stats['thursday_bookings'],
-                    'Friday': oasis_stats['friday_bookings']
-                }
-                st.bar_chart(day_breakdown)
-            
-            st.write("**📈 Weekly Trends:**")
-            if all_time_stats['weekly_trends']:
-                trends_df = pd.DataFrame(all_time_stats['weekly_trends'])
-                st.dataframe(trends_df, use_container_width=True)
         
         st.divider()
         
@@ -1157,172 +884,6 @@ def admin_controls():
                 st.session_state.admin_logged_in = False
                 st.rerun()
 
-def view_current_submissions():
-    """Display and allow editing of current week submissions."""
-    st.subheader("📋 Current Submissions")
-    
-    # Team submissions
-    team_query = """
-        SELECT team_name, contact_person, team_size, preferred_days, submission_time 
-        FROM weekly_preferences 
-        ORDER BY submission_time DESC
-    """
-    team_submissions = execute_query(team_query, fetch_all=True)
-    
-    if team_submissions:
-        st.write("**🏢 Team Room Preferences:**")
-        team_df = pd.DataFrame(team_submissions)
-        
-        # Make it editable
-        edited_teams = st.data_editor(
-            team_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="team_submissions_editor"
-        )
-        
-        if st.button("💾 Save Team Changes"):
-            # Clear existing and insert updated data
-            execute_query("DELETE FROM weekly_preferences")
-            for _, row in edited_teams.iterrows():
-                insert_query = """
-                    INSERT INTO weekly_preferences (team_name, contact_person, team_size, preferred_days, submission_time) 
-                    VALUES (%s, %s, %s, %s, %s)
-                """
-                execute_query(insert_query, (
-                    row['team_name'], row['contact_person'], 
-                    row['team_size'], row['preferred_days'], row['submission_time']
-                ))
-            st.success("Team preferences updated!")
-            st.rerun()
-    else:
-        st.info("No team submissions yet.")
-    
-    st.divider()
-    
-    # Oasis submissions
-    oasis_query = """
-        SELECT person_name, preferred_day_1, preferred_day_2, preferred_day_3, 
-               preferred_day_4, preferred_day_5, submission_time 
-        FROM oasis_preferences 
-        ORDER BY submission_time DESC
-    """
-    oasis_submissions = execute_query(oasis_query, fetch_all=True)
-    
-    if oasis_submissions:
-        st.write("**🌴 Oasis Desk Preferences:**")
-        oasis_df = pd.DataFrame(oasis_submissions)
-        
-        # Make it editable
-        edited_oasis = st.data_editor(
-            oasis_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="oasis_submissions_editor"
-        )
-        
-        if st.button("💾 Save Oasis Changes"):
-            # Clear existing and insert updated data
-            execute_query("DELETE FROM oasis_preferences")
-            for _, row in edited_oasis.iterrows():
-                insert_query = """
-                    INSERT INTO oasis_preferences 
-                    (person_name, preferred_day_1, preferred_day_2, preferred_day_3, preferred_day_4, preferred_day_5, submission_time) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """
-                execute_query(insert_query, (
-                    row['person_name'], row['preferred_day_1'], row['preferred_day_2'],
-                    row['preferred_day_3'], row['preferred_day_4'], row['preferred_day_5'], 
-                    row['submission_time']
-                ))
-            st.success("Oasis preferences updated!")
-            st.rerun()
-    else:
-        st.info("No Oasis submissions yet.")
-
-def view_current_allocations_admin():
-    """Display and allow editing of current allocations."""
-    st.subheader("🎯 Current Allocations")
-    
-    current_week = get_current_week()
-    
-    # Room allocations
-    room_alloc_query = """
-        SELECT team_name, room_name, date 
-        FROM weekly_allocations 
-        WHERE date >= %s AND date <= %s AND room_name != 'Oasis'
-        ORDER BY date, room_name
-    """
-    start_date = current_week
-    end_date = current_week + timedelta(days=3)
-    
-    room_allocations = execute_query(room_alloc_query, (start_date, end_date), fetch_all=True)
-    
-    if room_allocations:
-        st.write("**🏢 Room Allocations:**")
-        room_alloc_df = pd.DataFrame(room_allocations)
-        
-        # Make it editable
-        edited_rooms = st.data_editor(
-            room_alloc_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="room_allocations_editor"
-        )
-        
-        if st.button("💾 Save Room Allocation Changes"):
-            # Clear existing room allocations and insert updated data
-            execute_query("DELETE FROM weekly_allocations WHERE room_name != 'Oasis'")
-            for _, row in edited_rooms.iterrows():
-                insert_query = """
-                    INSERT INTO weekly_allocations (team_name, room_name, date) 
-                    VALUES (%s, %s, %s)
-                """
-                execute_query(insert_query, (row['team_name'], row['room_name'], row['date']))
-            st.success("Room allocations updated!")
-            st.rerun()
-    else:
-        st.info("No room allocations yet.")
-    
-    st.divider()
-    
-    # Oasis allocations
-    oasis_alloc_query = """
-        SELECT person_name, date 
-        FROM oasis_allocations 
-        WHERE date >= %s AND date <= %s
-        ORDER BY date, person_name
-    """
-    oasis_end_date = current_week + timedelta(days=4)  # Include Friday
-    
-    oasis_allocations = execute_query(oasis_alloc_query, (start_date, oasis_end_date), fetch_all=True)
-    
-    if oasis_allocations:
-        st.write("**🌴 Oasis Allocations:**")
-        oasis_alloc_df = pd.DataFrame(oasis_allocations)
-        
-        # Make it editable
-        edited_oasis_alloc = st.data_editor(
-            oasis_alloc_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="oasis_allocations_editor"
-        )
-        
-        if st.button("💾 Save Oasis Allocation Changes"):
-            # Clear existing Oasis allocations and insert updated data
-            execute_query("DELETE FROM oasis_allocations")
-            for _, row in edited_oasis_alloc.iterrows():
-                insert_query = """
-                    INSERT INTO oasis_allocations (person_name, date) 
-                    VALUES (%s, %s)
-                """
-                execute_query(insert_query, (row['person_name'], row['date']))
-            st.success("Oasis allocations updated!")
-            st.rerun()
-    else:
-        st.info("No Oasis allocations yet.")
-
 # -----------------------------------------------------
 # Main Application
 # -----------------------------------------------------
@@ -1348,7 +909,8 @@ def main():
     st.divider()
     show_oasis_allocations()
     st.divider()
-      # Submission forms
+    
+    # Submission forms
     col1, col2 = st.columns(2)
     
     with col1:
@@ -1356,8 +918,7 @@ def main():
     
     with col2:
         submit_oasis_preference()
-    
-    st.divider()
+      st.divider()
     
     # Admin section
     admin_controls()
