@@ -164,6 +164,13 @@ def set_current_week(week_monday):
 
 def get_submission_status():
     """Check if submissions are currently allowed."""
+    # Check if admin has forced submissions open
+    force_open_query = "SELECT setting_value FROM admin_settings WHERE setting_key = 'force_submissions_open'"
+    force_open_result = execute_query(force_open_query, fetch_one=True)
+    
+    if force_open_result and force_open_result['setting_value'] == 'true':
+        return True, "✅ Submissions FORCED OPEN by admin"
+    
     now = datetime.now(OFFICE_TIMEZONE)
     current_weekday = now.weekday()  # 0 = Monday, 6 = Sunday
     current_hour = now.hour
@@ -180,6 +187,164 @@ def get_submission_status():
     else:
         return False, f"🔒 Submissions closed (Open Tuesday-Thursday 16:00)"
 
+def force_open_submissions(enable=True):
+    """Force submissions to be open or closed regardless of time."""
+    # Ensure admin_settings table exists
+    create_table_query = """
+        CREATE TABLE IF NOT EXISTS admin_settings (
+            setting_key VARCHAR(255) PRIMARY KEY,
+            setting_value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+    execute_query(create_table_query)
+    
+    # Set the force submission setting
+    query = """
+        INSERT INTO admin_settings (setting_key, setting_value, updated_at) 
+        VALUES ('force_submissions_open', %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (setting_key) 
+        DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = CURRENT_TIMESTAMP
+    """
+    execute_query(query, ('true' if enable else 'false',))
+
+def get_weekly_usage_stats():
+    """Get comprehensive usage statistics for the current week."""
+    current_week = get_current_week()
+    
+    # Room usage statistics
+    room_usage_query = """
+        SELECT 
+            wa.room_name,
+            COUNT(*) as bookings,
+            COUNT(DISTINCT wa.team_name) as unique_teams,
+            STRING_AGG(DISTINCT wa.team_name, ', ') as teams
+        FROM weekly_allocations wa
+        WHERE wa.date >= %s AND wa.date <= %s AND wa.room_name != 'Oasis'
+        GROUP BY wa.room_name
+        ORDER BY bookings DESC
+    """
+    start_date = current_week
+    end_date = current_week + timedelta(days=4)
+    
+    room_stats = execute_query(room_usage_query, (start_date, end_date), fetch_all=True)
+    
+    # Oasis usage statistics
+    oasis_usage_query = """
+        SELECT 
+            DATE_PART('dow', oa.date) as day_of_week,
+            TO_CHAR(oa.date, 'Day') as day_name,
+            COUNT(*) as bookings,
+            COUNT(DISTINCT oa.person_name) as unique_people,
+            STRING_AGG(oa.person_name, ', ') as people
+        FROM oasis_allocations oa
+        WHERE oa.date >= %s AND oa.date <= %s
+        GROUP BY DATE_PART('dow', oa.date), TO_CHAR(oa.date, 'Day'), oa.date
+        ORDER BY oa.date
+    """
+    
+    oasis_stats = execute_query(oasis_usage_query, (start_date, end_date), fetch_all=True)
+    
+    # Overall capacity utilization
+    total_room_capacity = sum(room['capacity'] for room in project_rooms) * 4  # 4 days
+    total_oasis_capacity = oasis_config['capacity'] * 5  # 5 days
+    
+    total_room_bookings = sum(stat['bookings'] for stat in room_stats) if room_stats else 0
+    total_oasis_bookings = sum(stat['bookings'] for stat in oasis_stats) if oasis_stats else 0
+    
+    return {
+        'room_stats': room_stats,
+        'oasis_stats': oasis_stats,
+        'room_utilization': (total_room_bookings / total_room_capacity * 100) if total_room_capacity > 0 else 0,
+        'oasis_utilization': (total_oasis_bookings / total_oasis_capacity * 100) if total_oasis_capacity > 0 else 0,
+        'total_room_bookings': total_room_bookings,
+        'total_oasis_bookings': total_oasis_bookings
+    }
+
+def get_user_analytics():
+    """Get individual user analytics across all weeks."""
+    # Team/Contact person analytics for room bookings
+    team_analytics_query = """
+        SELECT 
+            wp.contact_person,
+            wp.team_name,
+            COUNT(DISTINCT wa.date) as total_room_days,
+            COUNT(DISTINCT DATE_TRUNC('week', wa.date)) as total_weeks_with_rooms,
+            STRING_AGG(DISTINCT wa.room_name, ', ') as rooms_used,
+            MIN(wa.date) as first_booking,
+            MAX(wa.date) as last_booking
+        FROM weekly_preferences wp
+        LEFT JOIN weekly_allocations wa ON wp.team_name = wa.team_name
+        WHERE wa.room_name != 'Oasis' OR wa.room_name IS NULL
+        GROUP BY wp.contact_person, wp.team_name
+        ORDER BY total_room_days DESC NULLS LAST
+    """
+    
+    team_analytics = execute_query(team_analytics_query, fetch_all=True)
+    
+    # Individual Oasis analytics
+    oasis_analytics_query = """
+        SELECT 
+            op.person_name,
+            COUNT(DISTINCT oa.date) as total_oasis_days,
+            COUNT(DISTINCT DATE_TRUNC('week', oa.date)) as total_weeks_with_oasis,
+            MIN(oa.date) as first_oasis_booking,
+            MAX(oa.date) as last_oasis_booking,
+            COUNT(DISTINCT CASE WHEN DATE_PART('dow', oa.date) = 1 THEN oa.date END) as monday_bookings,
+            COUNT(DISTINCT CASE WHEN DATE_PART('dow', oa.date) = 2 THEN oa.date END) as tuesday_bookings,
+            COUNT(DISTINCT CASE WHEN DATE_PART('dow', oa.date) = 3 THEN oa.date END) as wednesday_bookings,
+            COUNT(DISTINCT CASE WHEN DATE_PART('dow', oa.date) = 4 THEN oa.date END) as thursday_bookings,
+            COUNT(DISTINCT CASE WHEN DATE_PART('dow', oa.date) = 5 THEN oa.date END) as friday_bookings
+        FROM oasis_preferences op
+        LEFT JOIN oasis_allocations oa ON op.person_name = oa.person_name
+        GROUP BY op.person_name
+        ORDER BY total_oasis_days DESC NULLS LAST
+    """
+    
+    oasis_analytics = execute_query(oasis_analytics_query, fetch_all=True)
+    
+    # Combined analytics - people who use both services
+    combined_analytics_query = """
+        SELECT 
+            COALESCE(team_data.contact_person, oasis_data.person_name) as person_name,
+            COALESCE(team_data.total_room_days, 0) as room_days,
+            COALESCE(oasis_data.total_oasis_days, 0) as oasis_days,
+            COALESCE(team_data.total_weeks_with_rooms, 0) as room_weeks,
+            COALESCE(oasis_data.total_weeks_with_oasis, 0) as oasis_weeks,
+            CASE 
+                WHEN team_data.contact_person IS NOT NULL AND oasis_data.person_name IS NOT NULL THEN 'Both'
+                WHEN team_data.contact_person IS NOT NULL THEN 'Rooms Only'
+                ELSE 'Oasis Only'
+            END as usage_type
+        FROM (
+            SELECT 
+                wp.contact_person,
+                COUNT(DISTINCT wa.date) as total_room_days,
+                COUNT(DISTINCT DATE_TRUNC('week', wa.date)) as total_weeks_with_rooms
+            FROM weekly_preferences wp
+            LEFT JOIN weekly_allocations wa ON wp.team_name = wa.team_name
+            WHERE wa.room_name != 'Oasis' OR wa.room_name IS NULL
+            GROUP BY wp.contact_person
+        ) team_data
+        FULL OUTER JOIN (
+            SELECT 
+                op.person_name,
+                COUNT(DISTINCT oa.date) as total_oasis_days,
+                COUNT(DISTINCT DATE_TRUNC('week', oa.date)) as total_weeks_with_oasis
+            FROM oasis_preferences op
+            LEFT JOIN oasis_allocations oa ON op.person_name = oa.person_name
+            GROUP BY op.person_name
+        ) oasis_data ON team_data.contact_person = oasis_data.person_name
+        ORDER BY (COALESCE(team_data.total_room_days, 0) + COALESCE(oasis_data.total_oasis_days, 0)) DESC
+    """
+    
+    combined_analytics = execute_query(combined_analytics_query, fetch_all=True)
+    
+    return {
+        'team_analytics': team_analytics,
+        'oasis_analytics': oasis_analytics,
+        'combined_analytics': combined_analytics
+    }
 # -----------------------------------------------------
 # Database Connection Pool
 # -----------------------------------------------------
@@ -505,7 +670,7 @@ def admin_controls():
             st.metric("Oasis Preferences", oasis_count['count'] if oasis_count else 0)
         
         st.divider()
-          # Weekly Management
+        # Weekly Management
         st.subheader("📅 Weekly Management")
         
         # Allocation Buttons
@@ -533,8 +698,7 @@ def admin_controls():
                         st.error("❌ Oasis allocation failed.")
                 except Exception as e:
                     st.error(f"Oasis allocation error: {e}")
-        
-        # Combined allocation for convenience
+          # Combined allocation for convenience
         if st.button("⚡ Run Both Allocations", help="Run both project and Oasis allocations together"):
             try:
                 allocation_result = run_allocation(DATABASE_URL, base_monday_date=current_week)
@@ -548,45 +712,145 @@ def admin_controls():
         
         st.divider()
         
-        # Quick Actions
-        col1, col2, col3 = st.columns(3)
+        # Submission Control
+        st.subheader("🔓 Submission Control")
+        col1, col2 = st.columns(2)
         
         with col1:
-            # Streamlined weekly advancement with confirmation in expander
-            with st.expander("📈 Prepare Next Week"):
-                st.warning("⚠️ This will archive current data and advance to next week")
-                if st.button("✅ Confirm: Advance to Next Week", type="primary"):
-                    try:
-                        new_week = prepare_next_week()
-                        st.success(f"✅ Advanced to week of {new_week.strftime('%B %d, %Y')}")
-                        st.success("📦 Previous week's data has been archived")
-                        st.success("🗑️ Current preferences cleared for new submissions")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error preparing next week: {e}")
+            if st.button("🔓 Force Open Submissions", help="Allow submissions regardless of time restrictions", type="secondary"):
+                force_open_submissions(True)
+                st.success("✅ Submissions are now FORCED OPEN!")
+                st.rerun()
         
         with col2:
-            # Quick clear with confirmation
-            with st.expander("🗑️ Clear Current Data"):
-                st.warning("⚠️ This will remove current preferences and allocations")
-                if st.button("✅ Confirm: Clear Data", type="primary"):
-                    clear_queries = [
-                        "DELETE FROM weekly_allocations",
-                        "DELETE FROM oasis_allocations", 
-                        "DELETE FROM weekly_preferences",
-                        "DELETE FROM oasis_preferences"                    ]
-                    for query in clear_queries:
-                        execute_query(query)
-                    st.success("Current data cleared!")
-                    st.rerun()
-        
-        with col3:
-            st.write("**Manual Override**")
-            new_date = st.date_input("Set Week Monday", value=current_week)
-            if st.button("Set Week", help="Manually set the current week"):
-                set_current_week(new_date)
-                st.success(f"Week set to {new_date.strftime('%B %d, %Y')}")
+            if st.button("🔒 Restore Normal Schedule", help="Return to normal time-based submission rules"):
+                force_open_submissions(False)
+                st.success("✅ Submissions returned to normal schedule!")
                 st.rerun()
+        
+        st.divider()
+        
+        # Usage Analytics
+        st.subheader("📊 Usage Analytics")
+        
+        if st.button("📈 Show Weekly Usage Stats", help="Current week room and Oasis utilization"):
+            usage_stats = get_weekly_usage_stats()
+            
+            # Overall utilization metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Room Utilization", f"{usage_stats['room_utilization']:.1f}%")
+            with col2:
+                st.metric("Oasis Utilization", f"{usage_stats['oasis_utilization']:.1f}%")
+            with col3:
+                st.metric("Total Room Bookings", usage_stats['total_room_bookings'])
+            with col4:
+                st.metric("Total Oasis Bookings", usage_stats['total_oasis_bookings'])
+            
+            # Room usage breakdown
+            if usage_stats['room_stats']:
+                st.write("**📅 Room Usage This Week:**")
+                room_df = pd.DataFrame(usage_stats['room_stats'])
+                st.dataframe(room_df, use_container_width=True)
+            
+            # Oasis usage breakdown
+            if usage_stats['oasis_stats']:
+                st.write("**🌴 Oasis Usage This Week:**")
+                oasis_df = pd.DataFrame(usage_stats['oasis_stats'])
+                # Clean up the day name
+                oasis_df['day_name'] = oasis_df['day_name'].str.strip()
+                st.dataframe(oasis_df[['day_name', 'bookings', 'unique_people', 'people']], use_container_width=True)
+        
+        if st.button("👥 Show User Analytics", help="Individual usage patterns across all weeks"):
+            analytics = get_user_analytics()
+            
+            # Combined usage overview
+            st.write("**📊 Overall User Patterns:**")
+            if analytics['combined_analytics']:
+                combined_df = pd.DataFrame(analytics['combined_analytics'])
+                st.dataframe(combined_df, use_container_width=True)
+            
+            # Detailed breakdowns in tabs
+            tab1, tab2, tab3 = st.tabs(["🏢 Team Analytics", "🌴 Oasis Analytics", "📈 Usage Trends"])
+            
+            with tab1:
+                if analytics['team_analytics']:
+                    team_df = pd.DataFrame(analytics['team_analytics'])
+                    st.dataframe(team_df, use_container_width=True)
+                else:
+                    st.info("No team booking data available.")
+            
+            with tab2:
+                if analytics['oasis_analytics']:
+                    oasis_df = pd.DataFrame(analytics['oasis_analytics'])
+                    st.dataframe(oasis_df, use_container_width=True)
+                    
+                    # Day preference chart
+                    if len(oasis_df) > 0:
+                        st.write("**Day Preference Summary:**")
+                        day_totals = {
+                            'Monday': oasis_df['monday_bookings'].sum(),
+                            'Tuesday': oasis_df['tuesday_bookings'].sum(),
+                            'Wednesday': oasis_df['wednesday_bookings'].sum(),
+                            'Thursday': oasis_df['thursday_bookings'].sum(),
+                            'Friday': oasis_df['friday_bookings'].sum()
+                        }
+                        st.bar_chart(day_totals)
+                else:
+                    st.info("No Oasis booking data available.")
+            
+            with tab3:
+                if analytics['combined_analytics']:
+                    combined_df = pd.DataFrame(analytics['combined_analytics'])
+                    usage_type_counts = combined_df['usage_type'].value_counts()
+                    st.write("**Service Usage Distribution:**")
+                    st.bar_chart(usage_type_counts)
+                    
+                    # Top users
+                    combined_df['total_days'] = combined_df['room_days'] + combined_df['oasis_days']
+                    top_users = combined_df.nlargest(10, 'total_days')[['person_name', 'total_days', 'usage_type']]
+                    st.write("**Top 10 Most Active Users:**")
+                    st.dataframe(top_users, use_container_width=True)
+        
+        st.divider()
+        
+        # Quick Actions - Using expandable sections without nesting in columns
+        
+        # Streamlined weekly advancement with confirmation in expander
+        with st.expander("📈 Prepare Next Week"):
+            st.warning("⚠️ This will archive current data and advance to next week")
+            if st.button("✅ Confirm: Advance to Next Week", type="primary", key="advance_week"):
+                try:
+                    new_week = prepare_next_week()
+                    st.success(f"✅ Advanced to week of {new_week.strftime('%B %d, %Y')}")
+                    st.success("📦 Previous week's data has been archived")
+                    st.success("🗑️ Current preferences cleared for new submissions")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error preparing next week: {e}")
+        
+        # Quick clear with confirmation
+        with st.expander("🗑️ Clear Current Data"):
+            st.warning("⚠️ This will remove current preferences and allocations")
+            if st.button("✅ Confirm: Clear Data", type="primary"):
+                clear_queries = [
+                    "DELETE FROM weekly_allocations",
+                    "DELETE FROM oasis_allocations", 
+                    "DELETE FROM weekly_preferences",
+                    "DELETE FROM oasis_preferences"
+                ]
+                for query in clear_queries:
+                    execute_query(query)
+                st.success("Current data cleared!")
+                st.rerun()
+        
+        # Manual Override section
+        st.subheader("⚙️ Manual Override")
+        new_date = st.date_input("Set Week Monday", value=current_week)
+        if st.button("Set Week", help="Manually set the current week"):
+            set_current_week(new_date)
+            st.success(f"Week set to {new_date.strftime('%B %d, %Y')}")
+            st.rerun()
         
         st.divider()
         
