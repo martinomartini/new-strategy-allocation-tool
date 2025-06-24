@@ -27,7 +27,7 @@ ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin123")
 
 # Room Configuration
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOMS_FILE = os.path.join(BASE_DIR, 'rooms.json')
+ROOMS_FILE = os.path.join(BASE_DIR, 'data', 'rooms.json')
 
 def load_room_configuration():
     """Load room configuration from JSON file."""

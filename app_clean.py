@@ -6,12 +6,12 @@ import streamlit as st
 from datetime import timedelta
 
 # Import modules
-from config import PROJECT_ROOMS, OASIS_CONFIG, DATABASE_URL
-from src.week_management import get_current_week
-from src.display import show_current_allocations, show_oasis_allocations
-from src.forms import submit_team_preference, submit_oasis_preference
-from src.admin import admin_controls
-from src.allocate_rooms import run_allocation
+from config import PROJECT_ROOMS, OASIS_CONFIG
+from week_management import get_current_week
+from display import show_current_allocations, show_oasis_allocations
+from forms import submit_team_preference, submit_oasis_preference
+from admin import admin_controls
+from allocate_rooms import run_allocation
 
 # Configure page (MUST BE FIRST STREAMLIT COMMAND)
 st.set_page_config(
@@ -44,6 +44,7 @@ def main():
         
         # Oasis allocations
         show_oasis_allocations()
+        
         # Allocation buttons
         st.divider()
         st.subheader("🎯 Run Allocations")
@@ -54,16 +55,12 @@ def main():
             if st.button("🏢 Allocate Rooms", type="primary", use_container_width=True):
                 with st.spinner("Running room allocation..."):
                     try:
-                        base_monday = get_current_week()
-                        success, messages = run_allocation(DATABASE_URL, "project", base_monday)
+                        success = run_allocation("rooms")
                         if success:
                             st.success("✅ Room allocation completed!")
                             st.rerun()
                         else:
                             st.error("❌ Room allocation failed.")
-                            if messages:
-                                for msg in messages:
-                                    st.error(msg)
                     except Exception as e:
                         st.error(f"❌ Allocation error: {str(e)}")
         
@@ -71,16 +68,12 @@ def main():
             if st.button("🌴 Allocate Oasis", type="secondary", use_container_width=True):
                 with st.spinner("Running Oasis allocation..."):
                     try:
-                        base_monday = get_current_week()
-                        success, messages = run_allocation(DATABASE_URL, "oasis", base_monday)
+                        success = run_allocation("oasis")
                         if success:
                             st.success("✅ Oasis allocation completed!")
                             st.rerun()
                         else:
                             st.error("❌ Oasis allocation failed.")
-                            if messages:
-                                for msg in messages:
-                                    st.error(msg)
                     except Exception as e:
                         st.error(f"❌ Allocation error: {str(e)}")
     
