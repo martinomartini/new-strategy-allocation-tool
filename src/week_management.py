@@ -28,6 +28,11 @@ def get_next_monday():
     current_week = get_current_week()
     return current_week + timedelta(days=7)
 
+def get_next_week():
+    """Get the next week Monday for advance booking."""
+    current_week = get_current_week()
+    return current_week + timedelta(days=7)
+
 def set_current_week(week_monday):
     """Set the current active week in database."""
     # Ensure admin_settings table exists

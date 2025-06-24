@@ -70,7 +70,7 @@ def run_allocation(database_url, only=None, base_monday_date=None):
                        (base_monday_date, base_monday_date + timedelta(days=6)))
             print(f"Cleared project room allocations for week of {base_monday_date}")
         elif only == "oasis":
-            cur.execute("SELECT COUNT(*) FROM oasis_preferences")
+            cur.execute("SELECT COUNT(*) FROM oasis_preferences WHERE week_monday = %s", (base_monday_date,))
             if cur.fetchone()[0] == 0:
                 print("No oasis preferences submitted. Skipping Oasis allocation.")
                 return True, ["No oasis preferences to allocate, so no changes made."]
@@ -105,9 +105,9 @@ def run_allocation(database_url, only=None, base_monday_date=None):
 
         if only in [None, "project"]:
             print("Starting project room allocation...")
-            cur.execute("SELECT team_name, team_size, preferred_days FROM weekly_preferences")
+            cur.execute("SELECT team_name, team_size, preferred_days FROM weekly_preferences WHERE week_monday = %s", (base_monday_date,))
             team_preferences_raw = cur.fetchall()
-            print(f"Found {len(team_preferences_raw)} team preferences")
+            print(f"Found {len(team_preferences_raw)} team preferences for week {base_monday_date}")
 
             used_rooms_on_date = {date_obj: [] for date_obj in day_mapping.values()}
             placed_teams_info = {}
@@ -161,12 +161,11 @@ def run_allocation(database_url, only=None, base_monday_date=None):
                     min_suitable_capacity = min(r['capacity'] for r in possible_rooms_for_team)
                     best_fit_candidate_rooms = [r for r in possible_rooms_for_team if r['capacity'] == min_suitable_capacity]
                     random.shuffle(best_fit_candidate_rooms)
-                    chosen_room_config = best_fit_candidate_rooms[0]
-                    
-                    cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date) VALUES (%s, %s, %s)",
-                                (team_name, chosen_room_config["name"], actual_date1))
-                    cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date) VALUES (%s, %s, %s)",
-                                (team_name, chosen_room_config["name"], actual_date2))
+                    chosen_room_config = best_fit_candidate_rooms[0]                    
+                    cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date, week_monday) VALUES (%s, %s, %s, %s)",
+                                (team_name, chosen_room_config["name"], actual_date1, base_monday_date))
+                    cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date, week_monday) VALUES (%s, %s, %s, %s)",
+                                (team_name, chosen_room_config["name"], actual_date2, base_monday_date))
                     used_rooms_on_date[actual_date1].append(chosen_room_config["name"])
                     used_rooms_on_date[actual_date2].append(chosen_room_config["name"])
                     placed_teams_info[team_name] = [actual_date1, actual_date2]
@@ -206,12 +205,11 @@ def run_allocation(database_url, only=None, base_monday_date=None):
                     min_suitable_capacity_fb = min(r['capacity'] for r in possible_rooms_for_fallback)
                     best_fit_candidate_rooms_fb = [r for r in possible_rooms_for_fallback if r['capacity'] == min_suitable_capacity_fb]
                     random.shuffle(best_fit_candidate_rooms_fb)
-                    chosen_room_fb_config = best_fit_candidate_rooms_fb[0]
-                    
-                    cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date) VALUES (%s, %s, %s)",
-                                (team_name, chosen_room_fb_config["name"], fb_actual_date1))
-                    cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date) VALUES (%s, %s, %s)",
-                                (team_name, chosen_room_fb_config["name"], fb_actual_date2))
+                    chosen_room_fb_config = best_fit_candidate_rooms_fb[0]                    
+                    cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date, week_monday) VALUES (%s, %s, %s, %s)",
+                                (team_name, chosen_room_fb_config["name"], fb_actual_date1, base_monday_date))
+                    cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date, week_monday) VALUES (%s, %s, %s, %s)",
+                                (team_name, chosen_room_fb_config["name"], fb_actual_date2, base_monday_date))
                     used_rooms_on_date[fb_actual_date1].append(chosen_room_fb_config["name"])
                     used_rooms_on_date[fb_actual_date2].append(chosen_room_fb_config["name"])
                     placed_teams_info[team_name] = [fb_actual_date1, fb_actual_date2]
@@ -237,7 +235,7 @@ def run_allocation(database_url, only=None, base_monday_date=None):
             if not oasis_config:
                 print("Error: Oasis configuration missing or malformed, cannot perform Oasis allocation.")
             else:
-                cur.execute("SELECT person_name, preferred_day_1, preferred_day_2, preferred_day_3, preferred_day_4, preferred_day_5 FROM oasis_preferences")
+                cur.execute("SELECT person_name, preferred_day_1, preferred_day_2, preferred_day_3, preferred_day_4, preferred_day_5 FROM oasis_preferences WHERE week_monday = %s", (base_monday_date,))
                 person_rows = cur.fetchall()
                 print(f"Found {len(person_rows)} Oasis preferences")
                 
@@ -264,10 +262,11 @@ def run_allocation(database_url, only=None, base_monday_date=None):
                     for day_label, date_obj in day_mapping.items():
                         candidates = [p for p in day_to_people[day_label] if person_assigned_days[p] == 0]
                         random.shuffle(candidates)
+                        
                         for person_name in candidates:
                             if len(oasis_allocations_on_actual_date[date_obj]) < oasis_config["capacity"]:
-                                cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date) VALUES (%s, %s, %s)",
-                                            (person_name, oasis_config["name"], date_obj))
+                                cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date, week_monday) VALUES (%s, %s, %s, %s)",
+                                            (person_name, oasis_config["name"], date_obj, base_monday_date))
                                 oasis_allocations_on_actual_date[date_obj].add(person_name)
                                 person_assigned_days[person_name] += 1
                                 print(f"First pass: Assigned {person_name} to {day_label} ({date_obj})")
@@ -281,18 +280,20 @@ def run_allocation(database_url, only=None, base_monday_date=None):
                         random.shuffle(all_people)
 
                         print(f"Oasis allocation pass {pass_number}")
+                        
                         for person_name in all_people:
                             if person_assigned_days[person_name] >= len(person_preferences[person_name]):
                                 continue  # Person has been assigned to all their preferred days
                             
                             for day_label in person_preferences[person_name]:
                                 date_obj = day_mapping[day_label]
+                                
                                 if person_name in oasis_allocations_on_actual_date[date_obj]:
                                     continue  # Person already assigned to this day
                                 
                                 if len(oasis_allocations_on_actual_date[date_obj]) < oasis_config["capacity"]:
-                                    cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date) VALUES (%s, %s, %s)",
-                                                (person_name, oasis_config["name"], date_obj))
+                                    cur.execute("INSERT INTO weekly_allocations (team_name, room_name, date, week_monday) VALUES (%s, %s, %s, %s)",
+                                                (person_name, oasis_config["name"], date_obj, base_monday_date))
                                     oasis_allocations_on_actual_date[date_obj].add(person_name)
                                     person_assigned_days[person_name] += 1
                                     still_assignable = True
