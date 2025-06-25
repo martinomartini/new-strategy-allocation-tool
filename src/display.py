@@ -118,10 +118,6 @@ def show_week_allocations(target_week, is_next_week=False):
 
 def show_room_allocations_for_week(target_week):
     """Display room allocations for a specific week."""
-    # Show week info
-    week_end = target_week + timedelta(days=6)
-    st.info(f"**Week of:** {target_week.strftime('%B %d')} - {week_end.strftime('%B %d, %Y')}")
-    
     # Create date mapping for the week
     day_mapping = {
         target_week + timedelta(days=i): day 
@@ -130,7 +126,7 @@ def show_room_allocations_for_week(target_week):
     
     # Initialize grid with project rooms
     room_names = [r["name"] for r in PROJECT_ROOMS]
-    grid = {room: {"Room": room, **{day: "Vacant" for day in day_mapping.values()}} for room in room_names}
+    grid = {room: {"Room": room, **{day: "🟦 Available" for day in day_mapping.values()}} for room in room_names}
     
     # Get allocations from database
     query = """
@@ -154,21 +150,42 @@ def show_room_allocations_for_week(target_week):
                 contact = allocation.get("contact_person", "")
                 
                 if room_name in grid:
-                    display_text = f"**{team_name}**"
+                    display_text = f"🏢 {team_name}"
                     if contact:
-                        display_text += f"<br><small>{contact}</small>"
+                        display_text += f"\n👤 {contact}"
                     grid[room_name][day_name] = display_text
     
-    # Display grid
+    # Display grid with enhanced styling
     if grid:
         df = pd.DataFrame(list(grid.values()))
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        # Style the dataframe for better presentation
+        st.dataframe(
+            df, 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "Room": st.column_config.TextColumn("Room", help="Meeting room name"),
+                "Monday": st.column_config.TextColumn("Monday", help="Monday allocation"),
+                "Tuesday": st.column_config.TextColumn("Tuesday", help="Tuesday allocation"),
+                "Wednesday": st.column_config.TextColumn("Wednesday", help="Wednesday allocation"),
+                "Thursday": st.column_config.TextColumn("Thursday", help="Thursday allocation"),
+            }
+        )
+        
+        # Add legend
+        st.markdown("""
+        <div style="background: #f8f9fa; padding: 1rem; border-radius: 8px; margin-top: 1rem;">
+            <strong>Legend:</strong> 
+            🟦 Available | 🏢 Team Allocated | 👤 Contact Person
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        st.info("No room allocations found for this week.")
+        st.info("📭 No room allocations found for this week.")
 
 def show_oasis_allocations_for_week(target_week):
     """Display Oasis allocations for a specific week."""
-    st.subheader("🌴 Oasis Allocations")
+    st.markdown("#### 🌴 Oasis Desk Allocations")
     
     # Get Oasis allocations
     query = """
@@ -195,15 +212,44 @@ def show_oasis_allocations_for_week(target_week):
                 day_name = day_mapping[date]
                 allocations_by_day[day_name].append(allocation["person_name"])
         
-        # Display in columns
+        # Display in an enhanced format
         cols = st.columns(5)
-        for i, day in enumerate(days):
+        day_emojis = ["📅", "📅", "📅", "📅", "📅"]
+        
+        for i, (day, emoji) in enumerate(zip(days, day_emojis)):
             with cols[i]:
-                st.write(f"**{day}**")
+                st.markdown(f"**{emoji} {day}**")
+                
                 if allocations_by_day[day]:
-                    for person in allocations_by_day[day]:
-                        st.write(f"• {person}")
+                    # Create a nice card for each person
+                    for j, person in enumerate(allocations_by_day[day]):
+                        st.markdown(f"""
+                        <div style="background: #e8f5e8; padding: 0.5rem; margin: 0.25rem 0; border-radius: 6px; border-left: 3px solid #4caf50;">
+                            👤 {person}
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    # Show count
+                    count = len(allocations_by_day[day])
+                    st.caption(f"Total: {count} person{'s' if count != 1 else ''}")
                 else:
-                    st.write("*No allocations*")
+                    st.markdown("""
+                    <div style="background: #f5f5f5; padding: 1rem; border-radius: 6px; text-align: center; color: #666;">
+                        🟦 Available
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        # Summary statistics
+        total_bookings = sum(len(allocations_by_day[day]) for day in days)
+        st.markdown(f"""
+        <div style="background: #f0f8ff; padding: 1rem; border-radius: 8px; margin-top: 1rem; text-align: center;">
+            <strong>📊 Total Oasis Bookings This Week: {total_bookings}</strong>
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        st.info("No Oasis allocations found for this week.")
+        st.markdown("""
+        <div style="background: #f8f9fa; padding: 2rem; border-radius: 8px; text-align: center;">
+            <h4>🌴 No Oasis Allocations Yet</h4>
+            <p style="color: #666; margin: 0;">Submit your preferences to get started!</p>
+        </div>
+        """, unsafe_allow_html=True)
